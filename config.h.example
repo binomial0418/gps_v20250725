@@ -20,22 +20,5 @@
 #define USER_ID     "使用者ID"
 #define DEVICE_ID   "裝置ID"
 
-// ====== GPS 更新參數 ======
-#define MOVE_THRESHOLD_METERS   30.0f     // 發佈移動門檻（公尺）
-#define TIME_THRESHOLD_MS       30000UL   // 發佈時間門檻（毫秒）
-#define UPDATE_INTERVAL_MS      1500UL    // 位置更新/檢查間隔（毫秒）
-#define IDLE_TIMEOUT_MS         60000UL   // 靜止逾時（毫秒）
-#define SPEED_THRESHOLD_KMPH    1.0f      // 視為靜止的速度門檻（km/h）
-#define COURSE_THRESHOLD_DEG    20.0f     // 方向角變化門檻（度）
-#define MIN_SATELLITES          4         // 最小衛星數量門檻
-
-// ====== 批次上傳設定 ======
-#define BATCH_SIZE              3         // 批次上傳筆數（累積 N 筆才上傳）
-#define UPLOAD_INTERVAL_MS      1000UL    // 每筆資料間隔（毫秒）
-
-// ====== 硬體腳位設定 ======
-#define LED_PIN                 2         // 藍燈 GPIO（預設板載 LED）
-#define GPS_RX                  16        // ESP32 讀 GPS（接 GPS 的 TX）
-#define GPS_TX                  17        // ESP32 寫 GPS（接 GPS 的 RX）
 
 #endif // CONFIG_H
