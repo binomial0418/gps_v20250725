@@ -1,12 +1,13 @@
 /*
- * ESP32 + GPS (TinyGPSPlus) + MQTT(OwnTracks)
- * - 第一次定位成功：印出耗時並亮藍燈
- * - 失去定位：熄燈
- * - 每 UPDATE_INTERVAL_MS 檢查一次；移動距離 >= MOVE_THRESHOLD_METERS 或經過 TIME_THRESHOLD_MS 就上傳
- * - 若持續 IDLE_TIMEOUT_MS 速度為 0，暂停上傳，直到再次移動
- * - WiFi/MQTT 自動重連 + LWT
- */
+  GPS + MQTT 定位上傳
+  支援批次上傳與靜止偵測
+  使用 TinyGPS++ 庫解析 GPS 資料
+  使用 PubSubClient 庫進行 MQTT 通訊
+  適用於 ESP32 開發板
 
+  作者: InskyChen
+  日期: 2024-07-25
+*/
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <time.h>
