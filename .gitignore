@@ -1,0 +1,39 @@
+# 配置檔（包含敏感資訊）
+config.h
+
+# Arduino 編譯產生的檔案
+build/
+build_props.txt
+*.hex
+*.bin
+*.elf
+*.eep
+*.map
+
+# 系統檔案
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE 設定檔
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# 日誌檔案
+*.log
+
+# 備份檔案
+*.bak
+*.backup
+*~
