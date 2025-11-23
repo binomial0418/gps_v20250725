@@ -75,8 +75,10 @@ struct GpsData {
   unsigned long timestamp;
 };
 
-GpsData batchBuffer[BATCH_SIZE];  // 批次緩衝區
-int batchCount = 0;                // 目前已累積筆數
+// 雙緩衝區設計：一個累積，一個上傳
+GpsData accumulateBuffer[BATCH_SIZE];  // 累積緩衝區
+GpsData uploadBuffer[BATCH_SIZE];      // 上傳緩衝區
+int accumulateCount = 0;               // 累積緩衝區筆數
 
 // 背景上傳狀態變數
 bool isUploading = false;          // 是否正在上傳
@@ -136,47 +138,61 @@ bool ensureMqtt() {
 
 // 將資料加入批次緩衝區（非阻塞）
 void addToBatch(float lat, float lon, float accMeters, float velocity, float course, int satellites) {
-  // 如果正在上傳，等待下次再加
-  if (isUploading) {
-    Serial.println("⏳ 批次上傳中，跳過本筆資料");
-    return;
-  }
-
   unsigned long epoch = time(nullptr);
   if (epoch < 1000000000UL) {
     epoch = millis() / 1000UL;
   }
 
-  batchBuffer[batchCount].lat = lat;
-  batchBuffer[batchCount].lon = lon;
-  batchBuffer[batchCount].acc = accMeters;
-  batchBuffer[batchCount].vel = velocity;
-  batchBuffer[batchCount].cog = course;
-  batchBuffer[batchCount].satcnt = satellites;
-  batchBuffer[batchCount].timestamp = epoch;
-  batchCount++;
+  // 加入累積緩衝區
+  accumulateBuffer[accumulateCount].lat = lat;
+  accumulateBuffer[accumulateCount].lon = lon;
+  accumulateBuffer[accumulateCount].acc = accMeters;
+  accumulateBuffer[accumulateCount].vel = velocity;
+  accumulateBuffer[accumulateCount].cog = course;
+  accumulateBuffer[accumulateCount].satcnt = satellites;
+  accumulateBuffer[accumulateCount].timestamp = epoch;
+  accumulateCount++;
 
-  Serial.printf("📦 已累積 %d/%d 筆資料\n", batchCount, BATCH_SIZE);
+  Serial.printf("📦 已累積 %d/%d 筆資料", accumulateCount, BATCH_SIZE);
+  if (isUploading) {
+    Serial.println(" (背景上傳中...)");
+  } else {
+    Serial.println();
+  }
 
   // 達到批次大小，啟動背景上傳
-  if (batchCount >= BATCH_SIZE) {
+  if (accumulateCount >= BATCH_SIZE) {
     startBatchUpload();
   }
 }
 
 // 啟動批次上傳（非阻塞）
 void startBatchUpload() {
-  if (batchCount == 0) return;
+  if (accumulateCount == 0) return;
+  
+  // 如果正在上傳，跳過（不應該發生，但作為保護）
+  if (isUploading) {
+    Serial.println("⚠️ 上傳進行中，跳過新批次");
+    return;
+  }
+  
   if (!ensureMqtt()) {
     Serial.println("⚠️ MQTT 未連線，無法啟動上傳");
     return;
   }
 
+  // 交換緩衝區：將累積緩衝區複製到上傳緩衝區
+  for (int i = 0; i < accumulateCount; i++) {
+    uploadBuffer[i] = accumulateBuffer[i];
+  }
+  
+  uploadTotal = accumulateCount;
+  accumulateCount = 0;  // 清空累積緩衝區，準備接收新資料
+  
   isUploading = true;
   uploadIndex = 0;
-  uploadTotal = batchCount;
   lastUploadTime = millis();
-  Serial.printf("📤 啟動背景上傳 %d 筆資料...\n", uploadTotal);
+  Serial.printf("📤 啟動背景上傳 %d 筆資料（累積緩衝區已清空，可繼續接收新資料）\n", uploadTotal);
 }
 
 // 背景處理批次上傳（在 loop 中呼叫）
@@ -191,9 +207,9 @@ void processBatchUpload() {
     char json[160];
     snprintf(json, sizeof(json),
          "{\"_type\":\"location\",\"tst\":%lu,\"lat\":%.6f,\"lon\":%.6f,\"acc\":%.1f,\"vel\":%.1f,\"cog\":%.1f,\"satcnt\":%d}",
-         batchBuffer[uploadIndex].timestamp, batchBuffer[uploadIndex].lat, batchBuffer[uploadIndex].lon,
-         batchBuffer[uploadIndex].acc, batchBuffer[uploadIndex].vel, batchBuffer[uploadIndex].cog,
-         batchBuffer[uploadIndex].satcnt);
+         uploadBuffer[uploadIndex].timestamp, uploadBuffer[uploadIndex].lat, uploadBuffer[uploadIndex].lon,
+         uploadBuffer[uploadIndex].acc, uploadBuffer[uploadIndex].vel, uploadBuffer[uploadIndex].cog,
+         uploadBuffer[uploadIndex].satcnt);
 
     if (mqtt.publish(TOPIC_BASE, json, true)) {
       Serial.printf("[MQTT %d/%d] %s\n", uploadIndex + 1, uploadTotal, json);
@@ -209,7 +225,6 @@ void processBatchUpload() {
   if (uploadIndex >= uploadTotal) {
     Serial.printf("✅ 批次上傳完成！\n\n");
     isUploading = false;
-    batchCount = 0;  // 清空緩衝區
     uploadIndex = 0;
     uploadTotal = 0;
   }
@@ -217,32 +232,32 @@ void processBatchUpload() {
 
 // 舊版 sendBatch 保留作為備用（不再使用）
 void sendBatch() {
-  if (batchCount == 0) return;
+  if (accumulateCount == 0) return;
   if (!ensureMqtt()) {
     Serial.println("⚠️ MQTT 未連線，批次上傳失敗");
     return;
   }
 
-  Serial.printf("📤 開始批次上傳 %d 筆資料...\n", batchCount);
+  Serial.printf("📤 開始批次上傳 %d 筆資料...\n", accumulateCount);
 
-  for (int i = 0; i < batchCount; i++) {
+  for (int i = 0; i < accumulateCount; i++) {
     char json[160];
     snprintf(json, sizeof(json),
          "{\"_type\":\"location\",\"tst\":%lu,\"lat\":%.6f,\"lon\":%.6f,\"acc\":%.1f,\"vel\":%.1f,\"cog\":%.1f,\"satcnt\":%d}",
-         batchBuffer[i].timestamp, batchBuffer[i].lat, batchBuffer[i].lon,
-         batchBuffer[i].acc, batchBuffer[i].vel, batchBuffer[i].cog,
+         accumulateBuffer[i].timestamp, accumulateBuffer[i].lat, accumulateBuffer[i].lon,
+         accumulateBuffer[i].acc, accumulateBuffer[i].vel, accumulateBuffer[i].cog,
          gps.satellites.value());
 
     if (mqtt.publish(TOPIC_BASE, json, true)) {
-      Serial.printf("[MQTT %d/%d] %s\n", i + 1, batchCount, json);
+      Serial.printf("[MQTT %d/%d] %s\n", i + 1, accumulateCount, json);
     } else {
-      Serial.printf("❌ [MQTT %d/%d] 發送失敗\n", i + 1, batchCount);
+      Serial.printf("❌ [MQTT %d/%d] 發送失敗\n", i + 1, accumulateCount);
     }
     delay(50);  // 避免發送過快
   }
 
   Serial.printf("✅ 批次上傳完成！\n\n");
-  batchCount = 0;  // 清空緩衝區
+  accumulateCount = 0;  // 清空緩衝區
 }
 
 /* ────────── SETUP ────────── */
@@ -450,8 +465,8 @@ void loop() {
       // 速度為 0 且已經超過逾時時間
       if (!isIdle) {
         // ⚠️ 進入靜止前，先強制上傳所有累積的資料
-        if (batchCount > 0 && !isUploading) {
-          Serial.printf("⚡ 進入靜止模式前，強制上傳累積的 %d 筆資料\n", batchCount);
+        if (accumulateCount > 0 && !isUploading) {
+          Serial.printf("⚡ 進入靜止模式前，強制上傳累積的 %d 筆資料\n", accumulateCount);
           startBatchUpload();
           
           // 等待上傳完成（最多等 5 秒）
@@ -465,7 +480,7 @@ void loop() {
           if (isUploading) {
             Serial.println("⚠️ 上傳逾時，部分資料可能遺失");
             isUploading = false;
-            batchCount = 0;  // 清空避免下次重複上傳
+            accumulateCount = 0;  // 清空避免下次重複上傳
           }
         }
         
