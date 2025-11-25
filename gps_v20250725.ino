@@ -18,14 +18,16 @@
 #include "config.h"  // 引入配置檔
 
 // ====== GPS 更新參數（可透過網頁設定）======
-float MOVE_THRESHOLD_METERS = 50.0f;     // 發佈移動門檻（公尺）
+float MOVE_THRESHOLD_METERS = 50.0f;     // 發佈移動門檻（公尺）- 低速
+float MOVE_THRESHOLD_METERS2 = 100.0f;   // 發佈移動門檻（公尺）- 高速
+float HIGH_SPEED_THRESHOLD_KMPH = 70.0f; // 高速門檻（超過此速度使用 METERS2）
 unsigned long UPDATE_INTERVAL_MS = 1500UL;  // 位置更新/檢查間隔（毫秒）
 float COURSE_THRESHOLD_DEG = 25.0f;      // 方向角變化門檻（度）
+float SPEED_THRESHOLD_KMPH = 3.0f;       // 視為靜止的速度門檻（km/h）
 
 // ====== 固定參數 ======
 #define TIME_THRESHOLD_MS 30000UL   // 發佈時間門檻（毫秒）
 #define IDLE_TIMEOUT_MS 60000UL     // 靜止逾時（毫秒）
-#define SPEED_THRESHOLD_KMPH 1.0f   // 視為靜止的速度門檻（km/h）
 #define MIN_SATELLITES 4            // 最小衛星數量門檻
 
 // ====== 批次上傳設定 ======
@@ -112,8 +114,11 @@ void loadSettings() {
   
   // 載入 GPS 參數
   MOVE_THRESHOLD_METERS = preferences.getFloat("move_threshold", 50.0f);
+  MOVE_THRESHOLD_METERS2 = preferences.getFloat("move_threshold2", 100.0f);
+  HIGH_SPEED_THRESHOLD_KMPH = preferences.getFloat("high_speed_threshold", 70.0f);
   UPDATE_INTERVAL_MS = preferences.getULong("update_interval", 1500UL);
   COURSE_THRESHOLD_DEG = preferences.getFloat("course_threshold", 25.0f);
+  SPEED_THRESHOLD_KMPH = preferences.getFloat("speed_threshold", 1.0f);
   
   preferences.end();
   
@@ -121,7 +126,8 @@ void loadSettings() {
   Serial.printf("   WiFi SSID: %s\n", wifi_ssid.c_str());
   Serial.printf("   移動門檻: %.1f 公尺\n", MOVE_THRESHOLD_METERS);
   Serial.printf("   更新間隔: %lu 毫秒\n", UPDATE_INTERVAL_MS);
-  Serial.printf("   方向門檻: %.1f 度\n\n", COURSE_THRESHOLD_DEG);
+  Serial.printf("   方向門檻: %.1f 度\n", COURSE_THRESHOLD_DEG);
+  Serial.printf("   速度門檻: %.1f km/h\n\n", SPEED_THRESHOLD_KMPH);
 }
 
 // 儲存設定到 NVS
@@ -131,8 +137,11 @@ void saveSettings() {
   preferences.putString("wifi_ssid", wifi_ssid);
   preferences.putString("wifi_pwd", wifi_pwd);
   preferences.putFloat("move_threshold", MOVE_THRESHOLD_METERS);
+  preferences.putFloat("move_threshold2", MOVE_THRESHOLD_METERS2);
+  preferences.putFloat("high_speed_threshold", HIGH_SPEED_THRESHOLD_KMPH);
   preferences.putULong("update_interval", UPDATE_INTERVAL_MS);
   preferences.putFloat("course_threshold", COURSE_THRESHOLD_DEG);
+  preferences.putFloat("speed_threshold", SPEED_THRESHOLD_KMPH);
   
   preferences.end();
   Serial.println("💾 設定已儲存");
@@ -292,8 +301,18 @@ void handleRoot() {
       </div>
       
       <div class="form-group">
-        <label>發佈移動門檻 <span class="unit">(公尺)</span></label>
+        <label>發佈移動門檻（低速）<span class="unit">(公尺)</span></label>
         <input type="number" name="move_threshold" value=")rawliteral" + String(MOVE_THRESHOLD_METERS, 1) + R"rawliteral(" step="0.1" min="1" required>
+      </div>
+      
+      <div class="form-group">
+        <label>發佈移動門檻（高速）<span class="unit">(公尺)</span></label>
+        <input type="number" name="move_threshold2" value=")rawliteral" + String(MOVE_THRESHOLD_METERS2, 1) + R"rawliteral(" step="0.1" min="1" required>
+      </div>
+      
+      <div class="form-group">
+        <label>高速門檻 <span class="unit">(km/h，超過此速度使用高速門檻)</span></label>
+        <input type="number" name="high_speed_threshold" value=")rawliteral" + String(HIGH_SPEED_THRESHOLD_KMPH, 1) + R"rawliteral(" step="0.1" min="1" required>
       </div>
       
       <div class="form-group">
@@ -304,6 +323,11 @@ void handleRoot() {
       <div class="form-group">
         <label>方向角變化門檻 <span class="unit">(度)</span></label>
         <input type="number" name="course_threshold" value=")rawliteral" + String(COURSE_THRESHOLD_DEG, 1) + R"rawliteral(" step="0.1" min="1" max="180" required>
+      </div>
+      
+      <div class="form-group">
+        <label>靜止速度門檻 <span class="unit">(km/h)</span></label>
+        <input type="number" name="speed_threshold" value=")rawliteral" + String(SPEED_THRESHOLD_KMPH, 1) + R"rawliteral(" step="0.1" min="0.1" max="10" required>
       </div>
       
       <button type="submit" class="btn">💾 儲存設定</button>
@@ -331,11 +355,20 @@ void handleSave() {
   if (server.hasArg("move_threshold")) {
     MOVE_THRESHOLD_METERS = server.arg("move_threshold").toFloat();
   }
+  if (server.hasArg("move_threshold2")) {
+    MOVE_THRESHOLD_METERS2 = server.arg("move_threshold2").toFloat();
+  }
+  if (server.hasArg("high_speed_threshold")) {
+    HIGH_SPEED_THRESHOLD_KMPH = server.arg("high_speed_threshold").toFloat();
+  }
   if (server.hasArg("update_interval")) {
     UPDATE_INTERVAL_MS = server.arg("update_interval").toInt();
   }
   if (server.hasArg("course_threshold")) {
     COURSE_THRESHOLD_DEG = server.arg("course_threshold").toFloat();
+  }
+  if (server.hasArg("speed_threshold")) {
+    SPEED_THRESHOLD_KMPH = server.arg("speed_threshold").toFloat();
   }
   
   saveSettings();
@@ -389,8 +422,11 @@ void handleReset() {
   wifi_ssid = WIFI_SSID;
   wifi_pwd = WIFI_PWD;
   MOVE_THRESHOLD_METERS = 50.0f;
+  MOVE_THRESHOLD_METERS2 = 100.0f;
+  HIGH_SPEED_THRESHOLD_KMPH = 70.0f;
   UPDATE_INTERVAL_MS = 1500UL;
   COURSE_THRESHOLD_DEG = 25.0f;
+  SPEED_THRESHOLD_KMPH = 1.0f;
   
   String html = R"rawliteral(
 <!DOCTYPE html>
@@ -898,7 +934,9 @@ void loop() {
     }
 
     unsigned long timeSincePublish = millis() - lastPublish;
-    bool distanceReached = hasLastPosition && dist >= MOVE_THRESHOLD_METERS;
+    // 動態距離門檻：高速時使用較大門檻
+    float activeThreshold = (currentSpeed >= HIGH_SPEED_THRESHOLD_KMPH) ? MOVE_THRESHOLD_METERS2 : MOVE_THRESHOLD_METERS;
+    bool distanceReached = hasLastPosition && dist >= activeThreshold;
     bool timeReached = hasLastPosition && timeSincePublish >= TIME_THRESHOLD_MS;
     bool courseChanged = lastCourse >= 0.0 && courseValid && courseDiff >= COURSE_THRESHOLD_DEG;
 
@@ -906,8 +944,9 @@ void loop() {
     if (hasLastPosition && !distanceReached && !timeReached && !courseChanged) {
       // 每 5 秒才顯示一次未移動訊息，減少串口輸出
       if (millis() - lastNoMoveMsg >= 5000) {
-        Serial.printf("📍 未移動（距離 %.2f m < %.1f m，時間 %.1f s < %.1f s）\n", 
-                      dist, MOVE_THRESHOLD_METERS, 
+        Serial.printf("📍 未移動（距離 %.2f m < %.1f m [%s]，時間 %.1f s < %.1f s）\n", 
+                      dist, activeThreshold,
+                      (currentSpeed >= HIGH_SPEED_THRESHOLD_KMPH) ? "高速" : "低速",
                       timeSincePublish / 1000.0, TIME_THRESHOLD_MS / 1000.0);
         lastNoMoveMsg = millis();
       }
@@ -918,7 +957,9 @@ void loop() {
     // 顯示新位置資訊 + 本次移動距離/時間/方向
     if (hasLastPosition) {
       if (distanceReached) {
-        Serial.printf("🚶‍♂️ 移動觸發：距離 %.2f m (>= %.1f m)\n", dist, MOVE_THRESHOLD_METERS);
+        Serial.printf("🚶‍♂️ 移動觸發：距離 %.2f m (>= %.1f m [%s])\n", 
+                      dist, activeThreshold,
+                      (currentSpeed >= HIGH_SPEED_THRESHOLD_KMPH) ? "高速" : "低速");
       } else if (timeReached) {
         Serial.printf("⏰ 時間觸發：經過 %.1f 秒 (>= %.1f s)\n", 
                       timeSincePublish / 1000.0, TIME_THRESHOLD_MS / 1000.0);
