@@ -24,16 +24,16 @@ float HIGH_SPEED_THRESHOLD_KMPH = 70.0f; // 高速門檻（超過此速度使用
 unsigned long UPDATE_INTERVAL_MS = 1500UL;  // 位置更新/檢查間隔（毫秒）
 float COURSE_THRESHOLD_DEG = 25.0f;      // 方向角變化門檻（度）
 float PATH_TURN_THRESHOLD_DEG = 30.0f;   // 路徑轉向角門檻（度）- 計算相鄰兩段路徑的夾角
-float SPEED_THRESHOLD_KMPH = 3.0f;       // 視為靜止的速度門檻（km/h）
+float SPEED_THRESHOLD_KMPH = 0.5f;       // 視為靜止的速度門檻（km/h）
 
 // ====== 固定參數 ======
 #define TIME_THRESHOLD_MS 30000UL   // 發佈時間門檻（毫秒）
 #define IDLE_TIMEOUT_MS 60000UL     // 靜止逾時（毫秒）
-#define MIN_SATELLITES 4            // 最小衛星數量門檻
+#define MIN_SATELLITES 4            // 最小衛星數量門檻s
 
 // ====== 批次上傳設定 ======
 #define BATCH_SIZE 3              // 批次上傳筆數（累積 N 筆才上傳）
-#define UPLOAD_INTERVAL_MS 1000UL // 每筆資料間隔（毫秒）
+#define UPLOAD_INTERVAL_MS 500UL // 每筆資料間隔（毫秒）
 
 // ====== 硬體腳位設定 ======
 #define LED_PIN 2 // 藍燈 GPIO（預設板載 LED）
@@ -123,7 +123,7 @@ void loadSettings() {
   UPDATE_INTERVAL_MS = preferences.getULong("update_interval", 1500UL);
   COURSE_THRESHOLD_DEG = preferences.getFloat("course_threshold", 25.0f);
   PATH_TURN_THRESHOLD_DEG = preferences.getFloat("path_turn_threshold", 30.0f);
-  SPEED_THRESHOLD_KMPH = preferences.getFloat("speed_threshold", 1.0f);
+  SPEED_THRESHOLD_KMPH = preferences.getFloat("speed_threshold", 0.5f);
   
   preferences.end();
   
@@ -441,7 +441,7 @@ void handleReset() {
   UPDATE_INTERVAL_MS = 1500UL;
   COURSE_THRESHOLD_DEG = 25.0f;
   PATH_TURN_THRESHOLD_DEG = 30.0f;
-  SPEED_THRESHOLD_KMPH = 1.0f;
+  SPEED_THRESHOLD_KMPH = 0.5f;
   
   String html = R"rawliteral(
 <!DOCTYPE html>
@@ -894,19 +894,21 @@ void loop() {
   // 方向角即時檢查（不受 UPDATE_INTERVAL_MS 限制，避免遺漏轉彎）
   if (currentlyValid && gps.location.isUpdated() && gps.course.isValid()) {
     float currentCourse = gps.course.deg();
-    double currentLat = gps.location.lat();
-    double currentLng = gps.location.lng();
-    float currentSpeed = gps.speed.kmph();
+    double currentLat   = gps.location.lat();
+    double currentLng   = gps.location.lng();
+    float currentSpeed  = gps.speed.kmph();
+    float currentHdop   = gps.hdop.hdop();
     
     // 如果有上次方向角記錄，檢查是否變化超過門檻
     if (lastCourse >= 0.0) {
+      // 避免在速度極低時因方向亂跳而觸發
+      if (currentSpeed < 2.0f) return;
+
       float courseDiff = courseDifference(lastCourse, currentCourse);
       
       // 角度變化超過門檻，立即記錄（不等 UPDATE_INTERVAL_MS）
       if (courseDiff >= COURSE_THRESHOLD_DEG) {
-        // 速度檢查：只有超過速度門檻才記錄轉彎
-        if (currentSpeed > SPEED_THRESHOLD_KMPH) {
-          int satCount = gps.satellites.value();
+        int satCount = gps.satellites.value();
           if (satCount >= MIN_SATELLITES) {
             // 格式化 GPS 時間
             char gpsTimeStr[16];
@@ -916,15 +918,18 @@ void loop() {
             } else {
               strcpy(gpsTimeStr, "000000.00");
             }
+            // 根據 HDOP 估算一個合理的精度值（公尺）
+            // 這是一個簡化估算，HDOP 1.0 大約對應 3-5 公尺的誤差
+            float accuracy = (currentHdop > 0) ? currentHdop * 4.0f : 15.0f;
+
             Serial.printf("🔄 即時角度觸發：變化 %.1f° (>= %.1f°)\n", courseDiff, COURSE_THRESHOLD_DEG);
-            addToBatch((float)currentLat, (float)currentLng, 3.0f, currentSpeed, currentCourse, satCount, gpsTimeStr);
+            addToBatch((float)currentLat, (float)currentLng, accuracy, currentSpeed, currentCourse, satCount, gpsTimeStr);
             lastLat = currentLat;
             lastLng = currentLng;
             lastCourse = currentCourse;
-            lastPublish = millis();
+            // 不更新 lastPublish，讓定期檢查的時間觸發繼續運作
             hasLastPosition = true;
           }
-        }
       }
     } else {
       // 首次記錄方向角
@@ -999,7 +1004,7 @@ void loop() {
     bool pathTurnDetected = false;
     float pathTurnAngle = 0.0;
     
-    if (hasLastPosition && prevCourse >= 0.0 && currentSpeed > SPEED_THRESHOLD_KMPH) {
+    if (hasLastPosition && prevCourse >= 0.0) {
       // 計算「再前一個記錄點→上一個記錄點」的方向
       float prevPathCourse = calculateCourse(prevLat, prevLng, lastLat, lastLng);
       // 計算「上一個記錄點→當前點」的方向
@@ -1017,7 +1022,8 @@ void loop() {
     if (hasLastPosition && !distanceReached && !timeReached && !pathTurnDetected) {
       // 每 5 秒才顯示一次未移動訊息，減少串口輸出
       if (millis() - lastNoMoveMsg >= 5000) {
-        Serial.printf("📍 未移動（距離 %.2f m < %.1f m [%s]，時間 %.1f s < %.1f s）\n", 
+        Serial.printf("📍 未移動（速度 %.1f km/h，距離 %.2f m < %.1f m [%s]，時間 %.1f s < %.1f s）\n", 
+                      currentSpeed, 
                       dist, activeThreshold,
                       (currentSpeed >= HIGH_SPEED_THRESHOLD_KMPH) ? "高速" : "低速",
                       timeSincePublish / 1000.0, TIME_THRESHOLD_MS / 1000.0);
@@ -1040,7 +1046,7 @@ void loop() {
         Serial.printf("🔀 路徑轉向觸發：夾角 %.1f° (>= %.1f°)\n", pathTurnAngle, PATH_TURN_THRESHOLD_DEG);
       }
     } else {
-      Serial.println("🚩 首次位置紀錄");
+      Serial.println("🚩 首次位置紀錄（自動記錄）");
     }
 
     Serial.println("\n===== 新位置 =====");
@@ -1070,8 +1076,11 @@ void loop() {
       strcpy(gpsTimeStr, "000000.00");
     }
 
-    // 加入批次緩衝區（acc 目前仍給固定 3m；要用 HDOP 推算可再改）
-    addToBatch((float)currentLat, (float)currentLng, 3.0f, (float)gps.speed.kmph(), (float)gps.course.deg(), satCount, gpsTimeStr);
+    // 根據 HDOP 估算一個合理的精度值（公尺）
+    float accuracy = (gps.hdop.hdop() > 0) ? gps.hdop.hdop() * 4.0f : 15.0f;
+
+    // 加入批次緩衝區
+    addToBatch((float)currentLat, (float)currentLng, accuracy, (float)gps.speed.kmph(), (float)gps.course.deg(), satCount, gpsTimeStr);
 
     // 更新前一個記錄點（用於路徑轉向角計算）
     prevLat = lastLat;
