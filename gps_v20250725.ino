@@ -76,10 +76,10 @@ int lastSatCount = 0;                // 上次衛星數量
 unsigned long lastNoMoveMsg = 0;     // 上次「未移動」訊息時間
 
 bool   hasLastPosition = false;
+bool   hasPrevPosition = false;       // 是否有「前一個」記錄點（用於計算路徑轉向角）
 double lastLat = 0.0, lastLng = 0.0;
 double prevLat = 0.0, prevLng = 0.0;   // 前一個記錄點（用於計算路徑轉向角）
 float  lastCourse = -1.0;      // 上次發佈的方向角（-1 表示尚未記錄）
-float  prevCourse = -1.0;      // 前一個記錄點的方向角（用於計算路徑轉向角）
 
 // 批次上傳用的資料結構
 struct GpsData {
@@ -103,6 +103,7 @@ bool isUploading = false;          // 是否正在上傳
 int uploadIndex = 0;               // 當前上傳索引
 int uploadTotal = 0;               // 本次上傳總筆數
 unsigned long lastUploadTime = 0;  // 上次發送時間
+unsigned long lastForceCheckTime = 0; // 上次強制檢查上傳的時間（每分鐘檢查一次）
   
 /* ────────── 工具 ────────── */
 void ledOn()  { digitalWrite(LED_PIN, HIGH); }
@@ -347,6 +348,10 @@ void handleRoot() {
     <form action="/reset" method="POST" style="margin-top: 10px;">
       <button type="submit" class="btn btn-danger" onclick="return confirm('確定要重置為預設值嗎？');">🔄 重置為預設值</button>
     </form>
+    
+    <form action="/simulate" method="POST" style="margin-top: 10px;">
+      <button type="submit" class="btn" style="background: #2196F3;">🎬 注入模擬路徑點</button>
+    </form>
   </div>
 </body>
 </html>
@@ -474,6 +479,96 @@ void handleReset() {
     <h1>🔄 已重置為預設值</h1>
     <p>所有設定已恢復為預設值</p>
     <p>3 秒後自動返回...</p>
+  </div>
+</body>
+</html>
+)rawliteral";
+  
+  server.send(200, "text/html", html);
+}
+
+// ====== 模擬測試相關變數 ======
+bool isSimulating = false;
+int simulationIndex = 0;
+unsigned long lastSimulationTime = 0;
+
+struct SimulatedPoint {
+  double lat, lng;
+  float speed, course;
+};
+
+// 模擬路徑資料（從使用者提供的圖片轉錄）
+SimulatedPoint simulationData[] = {
+  {24.194323, 120.572411, 38.5, 341.7},
+  {24.198116, 120.571518, 51.9, 342.5},
+  {24.199886, 120.570724, 49.0, 333.0},
+  {24.201485, 120.569611, 43.2, 322.9},
+  {24.202879, 120.568230, 46.5, 312.7},
+  {24.204157, 120.566681, 46.7, 311.8},
+  {24.205448, 120.565155, 52.3, 312.8},
+  {24.206781, 120.563477, 52.9, 313.7},
+  {24.208149, 120.561844, 53.8, 312.8},
+  {24.209505, 120.560226, 52.9, 310.7},
+  {24.210817, 120.558594, 53.3, 310.9},
+  {24.212051, 120.556999, 47.9, 309.1},
+  {24.212673, 120.556175, 29.4, 307.0},
+  {24.213812, 120.554543, 61.8, 307.3},
+  {24.214939, 120.552917, 64.1, 307.6},
+  {24.216087, 120.551277, 63.5, 307.9},
+  {24.217031, 120.549553, 61.7, 286.3},
+  {24.217438, 120.547546, 65.3, 280.2},
+  {24.217798, 120.545357, 55.3, 279.8},
+  {24.218216, 120.543251, 41.3, 284.4},
+  {24.218283, 120.542892, 2.8, 282.5},
+  {24.218353, 120.542603, 8.6, 283.0},
+  {24.218349, 120.542480, 17.9, 257.0},
+  {24.218250, 120.542328, 26.0, 226.7},
+  {24.217907, 120.542206, 40.6, 193.7}
+};
+const int simulationDataSize = sizeof(simulationData) / sizeof(simulationData[0]);
+
+// 網頁伺服器：模擬路徑點（用於測試）
+void handleSimulate() {
+  // 啟動模擬模式
+  isSimulating = true;
+  simulationIndex = 0;
+  lastSimulationTime = millis() - 1000; // 讓第一次立即觸發
+  
+  Serial.println("\n🎬 [模擬測試] 啟動自動注入模式，共 25 筆資料，每秒一筆...");
+  
+  // 返回響應
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="1;url=/">
+  <title>模擬已啟動</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 50px;
+      background: #f0f0f0;
+    }
+    .success {
+      background: white;
+      padding: 40px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    h1 { color: #2196F3; }
+    p { color: #666; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="success">
+    <h1>🎬 模擬已啟動</h1>
+    <p>系統將每秒自動注入一筆資料</p>
+    <p>請查看串口監視器或 MQTT 伺服器</p>
+    <p>1 秒後自動返回...</p>
   </div>
 </body>
 </html>
@@ -754,14 +849,23 @@ void setup() {
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println(" 已連線！");
+    
+    // 取得 IP 位址
+    IPAddress ip = WiFi.localIP();
+    String ipStr = ip.toString();
+    
+    Serial.println("\n========================================");
     Serial.print("📱 IP 位址: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("🌐 網頁設定介面: http://" + WiFi.localIP().toString());
+    Serial.println(ipStr);
+    Serial.print("🌐 網頁設定介面: http://");
+    Serial.println(ipStr);
+    Serial.println("========================================\n");
     
     // 啟動網頁伺服器
     server.on("/", handleRoot);
     server.on("/save", HTTP_POST, handleSave);
     server.on("/reset", HTTP_POST, handleReset);
+    server.on("/simulate", HTTP_POST, handleSimulate); // 新增模擬路徑
     server.begin();
     Serial.println("✅ 網頁伺服器已啟動\n");
   } else {
@@ -783,10 +887,39 @@ void setup() {
 
 /* ────────── LOOP ────────── */
 void loop() {
+  // 處理模擬資料注入
+  if (isSimulating) {
+    if (millis() - lastSimulationTime >= 1000) {
+      lastSimulationTime = millis();
+      
+      if (simulationIndex < simulationDataSize) {
+        SimulatedPoint pt = simulationData[simulationIndex];
+        
+        Serial.printf("\n🎬 [模擬測試] 自動注入第 %d/%d 筆: Lat=%.6f, Lng=%.6f, Speed=%.1f, Course=%.1f\n",
+                      simulationIndex + 1, simulationDataSize, pt.lat, pt.lng, pt.speed, pt.course);
+        
+        char gpsTimeStr[16] = "120000.00";
+        // 模擬注入
+        addToBatch((float)pt.lat, (float)pt.lng, 10.0f, pt.speed, pt.course, 8, gpsTimeStr);
+        
+        simulationIndex++;
+      } else {
+        Serial.println("✅ [模擬測試] 所有資料注入完成");
+        isSimulating = false;
+      }
+    }
+  }
+
+  bool isLocationUpdated = false;
+
   // 讀入所有 GPS UART 資料
   while (gpsSerial.available()) {
     char c = gpsSerial.read();
-    gps.encode(c);
+    if (gps.encode(c)) {
+      if (gps.location.isUpdated()) {
+        isLocationUpdated = true;
+      }
+    }
     
     // 監測 GPS 資料接收（每收到完整句子會觸發）
     if (c == '\n' && gps.location.isUpdated()) {
@@ -892,7 +1025,7 @@ void loop() {
   }
   
   // 方向角即時檢查（不受 UPDATE_INTERVAL_MS 限制，避免遺漏轉彎）
-  if (currentlyValid && gps.location.isUpdated() && gps.course.isValid()) {
+  if (currentlyValid && isLocationUpdated && gps.course.isValid()) {
     float currentCourse = gps.course.deg();
     double currentLat   = gps.location.lat();
     double currentLng   = gps.location.lng();
@@ -901,13 +1034,10 @@ void loop() {
     
     // 如果有上次方向角記錄，檢查是否變化超過門檻
     if (lastCourse >= 0.0) {
-      // 避免在速度極低時因方向亂跳而觸發
-      if (currentSpeed < 2.0f) return;
-
       float courseDiff = courseDifference(lastCourse, currentCourse);
       
-      // 角度變化超過門檻，立即記錄（不等 UPDATE_INTERVAL_MS）
-      if (courseDiff >= COURSE_THRESHOLD_DEG) {
+      // 角度變化超過門檻，且速度夠快（避免低速方向亂跳），立即記錄（不等 UPDATE_INTERVAL_MS）
+      if (courseDiff >= COURSE_THRESHOLD_DEG && currentSpeed >= 2.0f) {
         int satCount = gps.satellites.value();
           if (satCount >= MIN_SATELLITES) {
             // 格式化 GPS 時間
@@ -924,11 +1054,8 @@ void loop() {
 
             Serial.printf("🔄 即時角度觸發：變化 %.1f° (>= %.1f°)\n", courseDiff, COURSE_THRESHOLD_DEG);
             addToBatch((float)currentLat, (float)currentLng, accuracy, currentSpeed, currentCourse, satCount, gpsTimeStr);
-            lastLat = currentLat;
-            lastLng = currentLng;
+            // 只更新方向角，不更新位置和時間，讓定期檢查的距離/時間觸發繼續運作
             lastCourse = currentCourse;
-            // 不更新 lastPublish，讓定期檢查的時間觸發繼續運作
-            hasLastPosition = true;
           }
       }
     } else {
@@ -939,7 +1066,7 @@ void loop() {
   }
   
   // 定期檢查距離和時間（保持原有邏輯）
-  if (currentlyValid && gps.location.isUpdated() &&
+  if (currentlyValid && isLocationUpdated &&
       millis() - lastUpdate >= UPDATE_INTERVAL_MS) {
 
     lastUpdate = millis();
@@ -955,10 +1082,30 @@ void loop() {
         isIdle = false;
         Serial.println("✅ 恢復移動，重新開始上傳");
       }
+    } else if (currentSpeed < 0.1f && accumulateCount > 0 && !isUploading) {
+      // 新增：速度趨近 0 且有未上傳的資料時，立即強制上傳
+      Serial.printf("🛑 偵測到速度趨近 0 (%.1f km/h)，立即強制上傳 %d 筆累積資料\n", currentSpeed, accumulateCount);
+      startBatchUpload();
     } else if (lastMovement > 0 && millis() - lastMovement >= IDLE_TIMEOUT_MS) {
       // 速度為 0 且已經超過逾時時間
       if (!isIdle) {
-        // ⚠️ 進入靜止前，先強制上傳所有累積的資料
+        Serial.println("🛑 偵測到停車，記錄最後位置...");
+
+        // 1. 準備數據：為了記錄停車點，需先格式化時間與精度
+        int satCount = gps.satellites.value();
+        char gpsTimeStr[16];
+        if (gps.time.isValid()) {
+          snprintf(gpsTimeStr, sizeof(gpsTimeStr), "%02d%02d%02d.%02d",
+                   gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+        } else {
+          strcpy(gpsTimeStr, "000000.00");
+        }
+        float accuracy = (gps.hdop.hdop() > 0) ? gps.hdop.hdop() * 4.0f : 15.0f;
+
+        // 2. 加入最後一點（停車點），確保軌跡結束在正確位置
+        addToBatch((float)currentLat, (float)currentLng, accuracy, currentSpeed, (float)gps.course.deg(), satCount, gpsTimeStr);
+
+        // 3. 進入靜止前，強制上傳所有累積的資料（包含剛剛加入的停車點）
         if (accumulateCount > 0 && !isUploading) {
           Serial.printf("⚡ 進入靜止模式前，強制上傳累積的 %d 筆資料\n", accumulateCount);
           startBatchUpload();
@@ -1004,7 +1151,8 @@ void loop() {
     bool pathTurnDetected = false;
     float pathTurnAngle = 0.0;
     
-    if (hasLastPosition && prevCourse >= 0.0) {
+    // 需要有三個點（current, last, prev）才能計算路徑轉向角
+    if (hasPrevPosition) {
       // 計算「再前一個記錄點→上一個記錄點」的方向
       float prevPathCourse = calculateCourse(prevLat, prevLng, lastLat, lastLng);
       // 計算「上一個記錄點→當前點」的方向
@@ -1085,12 +1233,14 @@ void loop() {
     // 更新前一個記錄點（用於路徑轉向角計算）
     prevLat = lastLat;
     prevLng = lastLng;
-    prevCourse = lastCourse;
     
     // 更新「上一次已發佈」的位置、時間、方向角
     lastLat = currentLat;
     lastLng = currentLng;
     lastPublish = millis();
+
+    // 更新狀態旗標
+    hasPrevPosition = hasLastPosition; // 在更新 hasLastPosition 前，將其舊值賦予 hasPrevPosition
     hasLastPosition = true;
     
     // 更新方向角記錄（如果有效）
@@ -1101,6 +1251,16 @@ void loop() {
 
   // 背景處理批次上傳（非阻塞）
   processBatchUpload();
+
+  // 每分鐘檢查一次是否有未上傳的航點，若有則強制上傳
+  if (millis() - lastForceCheckTime >= 60000UL) {  // 每 60 秒檢查一次
+    lastForceCheckTime = millis();
+    
+    if (accumulateCount > 0 && !isUploading) {
+      Serial.printf("\n⏰ [每分鐘檢查] 發現 %d 筆未上傳的航點，準備強制上傳...\n", accumulateCount);
+      startBatchUpload();
+    }
+  }
 
   // 處理網頁伺服器請求
   server.handleClient();
